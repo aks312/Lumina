@@ -1,0 +1,19 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "lumina",
+  "outputfilename": "LuminaPhotos",
+  "frontend:install": "npm.cmd install",
+  "frontend:build": "npm.cmd run build",
+  "frontend:dev:watcher": "npm.cmd run dev",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Lumina Team"
+  },
+  "info": {
+    "companyName": "Lumina",
+    "productName": "Lumina Photos V3",
+    "productVersion": "3.0.0",
+    "copyright": "Copyright 2026",
+    "comments": "Next-Gen Glassmorphic Windows Photo Organizer & Zero-Key AI Engine"
+  }
+}

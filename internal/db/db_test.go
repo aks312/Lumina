@@ -154,4 +154,19 @@ func TestDatabaseAndMemIndex(t *testing.T) {
 	if !updated.IsUserModified || updated.Rotation != 90 || updated.Rating != 5 || updated.RouteFolder != "PersonalFavorites" {
 		t.Errorf("User modifications not persisted properly: %+v", updated)
 	}
+
+	// 8. Test FastLookup in MemIndex (0ms RAM path resolution)
+	path1, rot1, isVid1, ok1 := db.MemIndex.FastLookup(id1)
+	if !ok1 || path1 != p1.OriginalPath || rot1 != 90 || isVid1 {
+		t.Errorf("FastLookup p1 failed: ok=%v, path=%s, rot=%d, isVid=%v", ok1, path1, rot1, isVid1)
+	}
+
+	// Also verify re-warming preserves FastLookup
+	if err := db.WarmMemIndex(); err != nil {
+		t.Fatalf("WarmMemIndex failed: %v", err)
+	}
+	path2, _, _, ok2 := db.MemIndex.FastLookup(id1)
+	if !ok2 || path2 != p1.OriginalPath {
+		t.Errorf("FastLookup after WarmMemIndex failed: ok=%v, path=%s", ok2, path2)
+	}
 }

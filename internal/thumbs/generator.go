@@ -10,6 +10,7 @@ import (
 	_ "image/png"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -65,8 +66,24 @@ func ExtractFastThumbnail(filePath string) ([]byte, bool) {
 	return nil, false
 }
 
+// isVideoFile checks if the file path has a recognized video extension.
+func isVideoFile(filePath string) bool {
+	ext := strings.ToLower(filepath.Ext(filePath))
+	switch ext {
+	case ".mp4", ".mov", ".mkv", ".avi", ".m4v", ".webm", ".3gp", ".wmv", ".flv":
+		return true
+	}
+	return false
+}
+
 // GenerateThumbnail scales any image down to target max dimension (e.g. 400x400) using high quality BiLinear draw.
+// Videos are automatically routed to the 3-stage visual video thumbnail extractor.
 func GenerateThumbnail(filePath string, maxDim int) ([]byte, error) {
+	// 0. Dedicated video frame extractor (Windows Shell -> MP4 atom -> Stylized cinema poster)
+	if isVideoFile(filePath) {
+		return GenerateVideoThumbnail(filePath, maxDim)
+	}
+
 	// 1. Try APP1 Fast Preview first!
 	if fastThumb, ok := ExtractFastThumbnail(filePath); ok {
 		return fastThumb, nil
@@ -177,6 +194,10 @@ func scaleProportional(w, h, maxDim int) (int, int) {
 }
 
 func createGenericPlaceholder(filePath string, maxDim int) ([]byte, error) {
+	if isVideoFile(filePath) {
+		return GenerateStylizedVideoPoster(filePath, maxDim), nil
+	}
+
 	w, h := 400, 300
 	dst := image.NewRGBA(image.Rect(0, 0, w, h))
 

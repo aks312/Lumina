@@ -82,14 +82,11 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
                 gridTemplateColumns: `repeat(${gridColumns}, minmax(0, 1fr))`,
               }}
             >
-              <AnimatePresence>
-                {groupPhotos.map((photo) => {
-                  const isSelected = selectedIDs.has(photo.id)
+              {groupPhotos.map((photo) => {
+                const isSelected = selectedIDs.has(photo.id)
 
                   return (
-                    <motion.div
-                      layout
-                      layoutId={`photo-${photo.id}`}
+                    <div
                       key={photo.id}
                       onClick={() => onOpenLightbox(photo)}
                       className={`group relative aspect-square rounded-xl overflow-hidden bg-slate-900 border cursor-pointer transition-all ${
@@ -104,6 +101,13 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
                         alt={photo.file_name}
                         loading="lazy"
                         className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        onError={(e) => {
+                          const target = e.currentTarget
+                          if (!target.dataset.retried) {
+                            target.dataset.retried = 'true'
+                            target.src = `/raw/${photo.id}`
+                          }
+                        }}
                       />
 
                       {/* Video Indicator */}
@@ -163,10 +167,9 @@ export const PhotoGrid: React.FC<PhotoGridProps> = ({
                           <span>{photo.tags.split(',').length}</span>
                         </div>
                       )}
-                    </motion.div>
+                    </div>
                   )
                 })}
-              </AnimatePresence>
             </div>
           </div>
         )

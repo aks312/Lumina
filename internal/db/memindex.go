@@ -69,6 +69,7 @@ type SlimPhotoNode struct {
 	IsVideo         bool
 	RouteFolder     string
 	CanonicalDevice string
+	Path            string
 }
 
 // ToSlimNode converts a full PhotoRecord into a compact SlimPhotoNode.
@@ -78,6 +79,11 @@ func (p *PhotoRecord) ToSlimNode() SlimPhotoNode {
 		ts = p.DateTaken.Unix()
 	} else {
 		ts = time.Now().Unix()
+	}
+
+	activePath := p.OrganizedPath
+	if activePath == "" {
+		activePath = p.OriginalPath
 	}
 
 	return SlimPhotoNode{
@@ -99,6 +105,7 @@ func (p *PhotoRecord) ToSlimNode() SlimPhotoNode {
 		IsVideo:         p.IsVideo,
 		RouteFolder:     p.RouteFolder,
 		CanonicalDevice: p.CanonicalDevice,
+		Path:            activePath,
 	}
 }
 
@@ -529,6 +536,18 @@ func (m *MemIndex) Count() int {
 	return len(m.nodes)
 }
 
+// FastLookup returns the active file path, rotation, and isVideo flag directly from RAM in 0ms (no SQLite locks).
+func (m *MemIndex) FastLookup(id uint32) (path string, rotation int, isVideo bool, ok bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	idx, exists := m.byID[id]
+	if !exists {
+		return "", 0, false, false
+	}
+	node := m.nodes[idx]
+	return node.Path, int(node.Rotation), node.IsVideo, true
+}
+
 // WarmMemIndex reads all photos from readDB and populates MemIndex.
 func (d *Database) WarmMemIndex() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -537,7 +556,8 @@ func (d *Database) WarmMemIndex() error {
 	rows, err := d.readDB.QueryContext(ctx, `SELECT 
 		id, file_size, width, height, date_taken, year, month, day,
 		canonical_device, platform, is_screenshot, route_folder, show_in_all,
-		is_user_modified, rotation, rating, is_favorite, is_video
+		is_user_modified, rotation, rating, is_favorite, is_video,
+		original_path, organized_path
 	FROM photos ORDER BY date_taken DESC;`)
 	if err != nil {
 		return err
@@ -553,11 +573,13 @@ func (d *Database) WarmMemIndex() error {
 		var dt string
 		var device, plat, route string
 		var isSS, showAll, isMod, rot, rat, isFav, isVid int
+		var orig, org string
 
 		if err := rows.Scan(
 			&id, &size, &w, &h, &dt, &yr, &mo, &dy,
 			&device, &plat, &isSS, &route, &showAll,
 			&isMod, &rot, &rat, &isFav, &isVid,
+			&orig, &org,
 		); err != nil {
 			return err
 		}
@@ -567,6 +589,11 @@ func (d *Database) WarmMemIndex() error {
 			ts = parsed.Unix()
 		} else if parsed, err := time.Parse(time.RFC3339, dt); err == nil {
 			ts = parsed.Unix()
+		}
+
+		activePath := org
+		if activePath == "" {
+			activePath = orig
 		}
 
 		node := SlimPhotoNode{
@@ -588,6 +615,7 @@ func (d *Database) WarmMemIndex() error {
 			IsVideo:         isVid == 1,
 			RouteFolder:     route,
 			CanonicalDevice: device,
+			Path:            activePath,
 		}
 		d.MemIndex.UpsertNode(node)
 	}

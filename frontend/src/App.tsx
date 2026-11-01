@@ -8,6 +8,9 @@ import { Lightbox } from './components/Lightbox'
 import { SettingsModal } from './components/SettingsModal'
 import { CleanUpAssistant } from './components/CleanUpAssistant'
 import { SetupHub } from './components/SetupHub'
+import { GooglePhotosView } from './components/GooglePhotosView'
+import { PeopleFacesView } from './components/PeopleFacesView'
+import { Calendar, X } from 'lucide-react'
 import { CatalogStats, PhotoRecord, TimelineBucket, WatchedFolder, IndexerProgress } from './types'
 import { api } from './services/api'
 
@@ -16,6 +19,8 @@ export const App: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState<string>('')
   const [gridColumns, setGridColumns] = useState<number>(5)
   const [favoritesOnly, setFavoritesOnly] = useState<boolean>(false)
+  const [selectedYear, setSelectedYear] = useState<number>(0)
+  const [selectedMonth, setSelectedMonth] = useState<number>(0)
 
   const [photos, setPhotos] = useState<PhotoRecord[]>([])
   const [stats, setStats] = useState<CatalogStats>({
@@ -39,12 +44,17 @@ export const App: React.FC = () => {
   const [isScanning, setIsScanning] = useState<boolean>(false)
   const [scanProgress, setScanProgress] = useState<IndexerProgress | null>(null)
 
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ]
+
   // Load photos based on active filters
   const loadPhotos = useCallback(async () => {
     const list = await api.getPhotos(
       currentTab,
-      0,
-      0,
+      selectedYear,
+      selectedMonth,
       '',
       favoritesOnly,
       0,
@@ -59,7 +69,7 @@ export const App: React.FC = () => {
 
     const buckets = await api.getTimelineSummary(currentTab)
     setTimelineBuckets(buckets ?? [])
-  }, [currentTab, favoritesOnly, searchQuery])
+  }, [currentTab, selectedYear, selectedMonth, favoritesOnly, searchQuery])
 
   // Initial load & watched folders
   useEffect(() => {
@@ -98,6 +108,8 @@ export const App: React.FC = () => {
     setCurrentTab(tab)
     setSelectedIDs(new Set())
     setIsSetupHubOpen(false)
+    setSelectedYear(0)
+    setSelectedMonth(0)
   }
 
   // Toggle selection
@@ -168,11 +180,20 @@ export const App: React.FC = () => {
     await api.startScan(true)
   }
 
-  // Jump to Year-Month from Timeline Scrubber
-  const handleSelectMonth = async (year: number, month: number) => {
-    const element = document.getElementById(`timeline-${year}-${String(month).padStart(2, '0')}`)
-    if (element) {
-      element.scrollIntoView({ behavior: 'smooth' })
+  // Jump to Year-Month from Timeline Scrubber (Filters by Year & Month or scrolls smoothly)
+  const handleSelectMonth = (year: number, month: number) => {
+    if (selectedYear === year && selectedMonth === month) {
+      // Toggle off to show full timeline
+      setSelectedYear(0)
+      setSelectedMonth(0)
+    } else {
+      setSelectedYear(year)
+      setSelectedMonth(month)
+      // If the section is already mounted in DOM, scroll smoothly to it
+      const element = document.getElementById(`timeline-${year}-${String(month).padStart(2, '0')}`)
+      if (element) {
+        element.scrollIntoView({ behavior: 'smooth' })
+      }
     }
   }
 
@@ -227,6 +248,32 @@ export const App: React.FC = () => {
           </div>
         )}
 
+        {/* Active Month/Year Filter Banner */}
+        {selectedYear > 0 && selectedMonth > 0 && (
+          <div className="px-6 py-2 bg-sky-500/15 border-b border-sky-500/30 flex items-center justify-between text-xs text-sky-200 backdrop-blur-md">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-sky-400" />
+              <span>
+                Filtered by:{' '}
+                <strong className="text-white">
+                  {monthNames[selectedMonth - 1]} {selectedYear}
+                </strong>
+              </span>
+              <span className="text-slate-400 font-mono">({photos.length} items)</span>
+            </div>
+            <button
+              onClick={() => {
+                setSelectedYear(0)
+                setSelectedMonth(0)
+              }}
+              className="flex items-center gap-1 px-2.5 py-0.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 hover:text-white transition text-[11px]"
+            >
+              <X className="w-3 h-3" />
+              <span>Show All Months</span>
+            </button>
+          </div>
+        )}
+
         {/* Dynamic View Body */}
         <div className="flex-1 flex h-full overflow-hidden">
           {isSetupHubOpen ? (
@@ -245,6 +292,14 @@ export const App: React.FC = () => {
               onToggleSelect={handleToggleSelect}
               selectedIDs={selectedIDs}
             />
+          ) : currentTab === 'google_photos' ? (
+            <GooglePhotosView stats={stats} />
+          ) : currentTab === 'people' ? (
+            <PeopleFacesView
+              photos={photos ?? []}
+              onOpenLightbox={setActiveLightboxPhoto}
+              onToggleFavorite={handleToggleFavorite}
+            />
           ) : (
             <>
               {/* Photo Grid */}
@@ -262,6 +317,8 @@ export const App: React.FC = () => {
               <TimelineScrubber
                 buckets={timelineBuckets ?? []}
                 onSelectMonth={handleSelectMonth}
+                selectedYear={selectedYear}
+                selectedMonth={selectedMonth}
               />
             </>
           )}

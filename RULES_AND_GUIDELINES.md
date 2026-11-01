@@ -46,3 +46,11 @@ Every photo or video scanned and organized into the destination directory strict
 - **Fault Tolerance:** Call `debug.SetPanicOnFault(true)` and wrap worker goroutines in structured `recover()` handlers.
 - **OS Governance:** Windows worker throttling using `BELOW_NORMAL_PRIORITY_CLASS` so user experience remains silky smooth at 120fps even during 100,000-photo cataloging.
 - **Sleep Prevention:** Use Win32 `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` during active scans and uploads so transfers are never severed by Windows entering sleep mode.
+
+---
+
+## Rule 5: Zero Visible Subprocess Windows & Pure-Go Fallbacks
+- **Mandatory Silent Helpers:** Never call `os/exec.Command` or `exec.CommandContext` directly anywhere in the codebase. Always use `sys.SilentCommand` / `sys.SilentCommandContext` configured with `HideWindow: true` and `CreationFlags: 0x08000000 (CREATE_NO_WINDOW)`.
+- **Zero Console Popping:** When running GUI binaries on Windows (`-H=windowsgui`), spawning unflagged child processes causes visible console/cmd windows to flash and steal keyboard focus. Every external process invocation must be silent and headless.
+- **No Per-File Background Process Loops:** Never spawn `powershell.exe` in a per-file loop (e.g. for video thumbnailing, EXIF inspection, or drive detection). Use pure-Go scanners (`os.Open`, atomic parsing) and native Win32 DLL calls (`kernel32.dll`) which run in `< 1ms` with zero process overhead.
+- **Automated Verification:** Verified by continuous unit test `internal/sys/TestRule5ZeroRawExecCommands` which fails the build if any raw `exec.Command` call is introduced outside `internal/sys/exec_*.go`.

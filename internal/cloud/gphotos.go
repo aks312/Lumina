@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	"time"
 
 	"lumina/internal/db"
+	"lumina/internal/sys"
 )
 
 // Default consumer client ID (supports PKCE with loopback redirect URI http://127.0.0.1:8989/oauth/callback)
@@ -170,11 +170,12 @@ func (g *GooglePhotosSyncManager) Start1ClickSignIn(ctx context.Context, onAuthS
 }
 
 // OpenExternalURL opens a URL in the user's default browser on Windows.
+// Guaranteed no visible console window (Rule 5).
 func OpenExternalURL(urlStr string) {
 	if runtime.GOOS == "windows" {
-		_ = exec.Command("rundll32", "url.dll,FileProtocolHandler", urlStr).Start()
+		_ = sys.SilentCommand("rundll32", "url.dll,FileProtocolHandler", urlStr).Start()
 	} else {
-		_ = exec.Command("xdg-open", urlStr).Start()
+		_ = sys.SilentCommand("xdg-open", urlStr).Start()
 	}
 }
 

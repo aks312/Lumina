@@ -9,7 +9,6 @@ import (
 	_ "image/png"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -18,6 +17,7 @@ import (
 	_ "golang.org/x/image/webp"
 
 	"lumina/internal/metadata"
+	"lumina/internal/sys"
 )
 
 // SceneAnalysisResult stores generated tags and scene classification.
@@ -239,7 +239,8 @@ Write-Output $res.Text
 	cmdCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(cmdCtx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", psScript)
+	// Guarantee no visible console window (Rule 5)
+	cmd := sys.SilentCommandContext(cmdCtx, "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", psScript)
 	var out bytes.Buffer
 	cmd.Stdout = &out
 

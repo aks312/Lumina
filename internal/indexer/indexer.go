@@ -320,7 +320,14 @@ func (idx *CatalogIndexer) ProcessSingleFile(
 	}
 
 	// 9. Generate & Pack Thumbnail if not already packed
-	if !idx.packStore.Has(id) {
+	needThumb := !idx.packStore.Has(id)
+	if !needThumb && isVideo {
+		// Re-evaluate if existing video thumbnail was an old blank placeholder (<3000 bytes)
+		if existing, err := idx.packStore.Get(id); err == nil && len(existing) < 3000 {
+			needThumb = true
+		}
+	}
+	if needThumb {
 		thumbBytes, err := thumbs.GenerateThumbnail(filePath, 400)
 		if err == nil && len(thumbBytes) > 0 {
 			_ = idx.packStore.Put(id, thumbBytes)
@@ -416,6 +423,56 @@ func (idx *CatalogIndexer) ReVerifyScreenshots(ctx context.Context) error {
 func (idx *CatalogIndexer) PurgeThumbnails(ctx context.Context) error {
 	// Re-warm index
 	return idx.database.WarmMemIndex()
+}
+
+// BackfillVideoThumbnails guarantees every video in the catalog has a rich visual thumbnail in thumbs.pack.
+func (idx *CatalogIndexer) BackfillVideoThumbnails(ctx context.Context) error {
+	rows, err := idx.database.ReadDB().QueryContext(ctx, `SELECT id, original_path, organized_path FROM photos WHERE is_video = 1;`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type vidItem struct {
+		id   uint32
+		path string
+	}
+	var items []vidItem
+	for rows.Next() {
+		var it vidItem
+		var orig, org string
+		if err := rows.Scan(&it.id, &orig, &org); err == nil {
+			target := orig
+			if org != "" {
+				if info, err := os.Stat(org); err == nil && !info.IsDir() {
+					target = org
+				}
+			}
+			it.path = target
+			items = append(items, it)
+		}
+	}
+
+	for _, it := range items {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		if idx.packStore != nil {
+			existing, err := idx.packStore.Get(it.id)
+			if err == nil && len(existing) > 3000 {
+				continue
+			}
+		}
+
+		thumbBytes, err := thumbs.GenerateThumbnail(it.path, 400)
+		if err == nil && len(thumbBytes) > 0 && idx.packStore != nil {
+			_ = idx.packStore.Put(it.id, thumbBytes)
+		}
+	}
+	return nil
 }
 
 func (idx *CatalogIndexer) emitProgress(p IndexerProgress) {

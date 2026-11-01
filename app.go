@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"image"
 	"image/jpeg"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
@@ -371,10 +373,60 @@ func (a *App) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 	}
 	id := uint32(id64)
 
+	// Check if this ID is a video
+	var isVideo bool
+	if a.database != nil && a.database.MemIndex != nil {
+		_, _, isVid, _ := a.database.MemIndex.FastLookup(id)
+		isVideo = isVid
+	}
+
 	// Try fetching from thumbs.pack + LRU cache
 	if a.packStore != nil {
 		thumbBytes, err := a.packStore.Get(id)
 		if err == nil && len(thumbBytes) > 0 {
+			// If it's a video, ensure it's not an old blank placeholder (<3000 bytes)
+			if !isVideo || len(thumbBytes) >= 3000 {
+				w.Header().Set("Content-Type", "image/jpeg")
+				w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+				w.Header().Set("Content-Length", strconv.Itoa(len(thumbBytes)))
+				_, _ = w.Write(thumbBytes)
+				return
+			}
+		}
+	}
+
+	// Fast 0ms in-memory resolution of file path (no SQLite lock contention!)
+	var filePath string
+	if a.database != nil && a.database.MemIndex != nil {
+		p, _, vid, ok := a.database.MemIndex.FastLookup(id)
+		if ok {
+			filePath = p
+			isVideo = vid
+		}
+	}
+
+	// Fallback to SQLite query with strict 2-second timeout if not yet in MemIndex
+	if filePath == "" || !fileExists(filePath) {
+		if a.database != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			photo, err := a.database.GetPhotoByID(ctx, id)
+			cancel()
+			if err == nil && photo != nil {
+				filePath = photo.OrganizedPath
+				if filePath == "" || !fileExists(filePath) {
+					filePath = photo.OriginalPath
+				}
+				isVideo = photo.IsVideo
+			}
+		}
+	}
+
+	if fileExists(filePath) {
+		thumbBytes, err := thumbs.GenerateThumbnail(filePath, 400)
+		if err == nil && len(thumbBytes) > 0 {
+			if a.packStore != nil {
+				_ = a.packStore.Put(id, thumbBytes)
+			}
 			w.Header().Set("Content-Type", "image/jpeg")
 			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
 			w.Header().Set("Content-Length", strconv.Itoa(len(thumbBytes)))
@@ -383,34 +435,10 @@ func (a *App) ServeThumbnail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Generate on the fly from file
-	if a.database != nil {
-		photo, err := a.database.GetPhotoByID(context.Background(), id)
-		if err == nil && photo != nil {
-			filePath := photo.OrganizedPath
-			if filePath == "" || !fileExists(filePath) {
-				filePath = photo.OriginalPath
-			}
-			if fileExists(filePath) {
-				thumbBytes, err := thumbs.GenerateThumbnail(filePath, 400)
-				if err == nil && len(thumbBytes) > 0 {
-					if a.packStore != nil {
-						_ = a.packStore.Put(id, thumbBytes)
-					}
-					w.Header().Set("Content-Type", "image/jpeg")
-					w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
-					w.Header().Set("Content-Length", strconv.Itoa(len(thumbBytes)))
-					_, _ = w.Write(thumbBytes)
-					return
-				}
-			}
-		}
-	}
-
 	http.NotFound(w, r)
 }
 
-// ServeRawMedia handles /raw/{id}
+// ServeRawMedia handles /raw/{id} with 0ms in-memory resolution and streaming Range support
 func (a *App) ServeRawMedia(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.Path
 	idStr := strings.TrimPrefix(path, "/raw/")
@@ -421,57 +449,104 @@ func (a *App) ServeRawMedia(w http.ResponseWriter, r *http.Request) {
 	}
 	id := uint32(id64)
 
-	if a.database != nil {
-		photo, err := a.database.GetPhotoByID(context.Background(), id)
-		if err == nil && photo != nil {
-			filePath := photo.OrganizedPath
-			if filePath == "" || !fileExists(filePath) {
-				filePath = photo.OriginalPath
-			}
+	// 1. Fast 0ms in-memory RAM lookup — Zero SQLite queries, Zero scanner lockups!
+	var filePath string
+	var rotation int
+	var isVideo bool
 
-			if fileExists(filePath) {
-				// Apply rotation if needed
-				if photo.Rotation != 0 {
-					f, err := os.Open(filePath)
-					if err == nil {
-						img, _, decErr := image.Decode(f)
-						_ = f.Close()
-						if decErr == nil && img != nil {
-							rotated := thumbs.RotateImage(img, photo.Rotation)
-							var buf bytes.Buffer
-							if err := jpeg.Encode(&buf, rotated, &jpeg.Options{Quality: 92}); err == nil {
-								w.Header().Set("Content-Type", "image/jpeg")
-								w.Header().Set("Cache-Control", "no-cache")
-								_, _ = w.Write(buf.Bytes())
-								return
-							}
-						}
-					}
-				}
+	if a.database != nil && a.database.MemIndex != nil {
+		p, rot, vid, ok := a.database.MemIndex.FastLookup(id)
+		if ok {
+			filePath = p
+			rotation = rot
+			isVideo = vid
+		}
+	}
 
-				ext := strings.ToLower(filepath.Ext(filePath))
-				mime := "image/jpeg"
-				switch ext {
-				case ".png":
-					mime = "image/png"
-				case ".webp":
-					mime = "image/webp"
-				case ".mp4":
-					mime = "video/mp4"
-				case ".mov":
-					mime = "video/quicktime"
-				case ".mkv":
-					mime = "video/x-matroska"
+	// 2. Safe fallback to database with strict 2-second timeout
+	if filePath == "" || !fileExists(filePath) {
+		if a.database != nil {
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			photo, err := a.database.GetPhotoByID(ctx, id)
+			cancel()
+			if err == nil && photo != nil {
+				filePath = photo.OrganizedPath
+				if filePath == "" || !fileExists(filePath) {
+					filePath = photo.OriginalPath
 				}
-				w.Header().Set("Content-Type", mime)
-				w.Header().Set("Cache-Control", "public, max-age=86400")
-				http.ServeFile(w, r, filePath)
-				return
+				rotation = photo.Rotation
+				isVideo = photo.IsVideo
 			}
 		}
 	}
 
-	http.NotFound(w, r)
+	if filePath == "" || !fileExists(filePath) {
+		http.NotFound(w, r)
+		return
+	}
+
+	// 3. Open file with automatic descriptor cleanup
+	f, err := os.Open(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	// Apply rotation on the fly only for non-video images with rotation
+	if rotation != 0 && !isVideo && stat.Size() < 50*1024*1024 {
+		img, _, decErr := image.Decode(f)
+		if decErr == nil && img != nil {
+			rotated := thumbs.RotateImage(img, rotation)
+			var buf bytes.Buffer
+			if err := jpeg.Encode(&buf, rotated, &jpeg.Options{Quality: 90}); err == nil {
+				w.Header().Set("Content-Type", "image/jpeg")
+				w.Header().Set("Cache-Control", "no-cache")
+				w.Header().Set("Content-Length", strconv.Itoa(buf.Len()))
+				_, _ = w.Write(buf.Bytes())
+				return
+			}
+		}
+		// Reset file seek if decode/encode was attempted
+		_, _ = f.Seek(0, io.SeekStart)
+	}
+
+	ext := strings.ToLower(filepath.Ext(filePath))
+	mime := "image/jpeg"
+	switch ext {
+	case ".png":
+		mime = "image/png"
+	case ".webp":
+		mime = "image/webp"
+	case ".heic", ".heif":
+		mime = "image/heic"
+	case ".mp4":
+		mime = "video/mp4"
+	case ".mov":
+		mime = "video/quicktime"
+	case ".mkv":
+		mime = "video/x-matroska"
+	case ".webm":
+		mime = "video/webm"
+	case ".avi":
+		mime = "video/x-msvideo"
+	case ".m4v":
+		mime = "video/x-m4v"
+	}
+
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+
+	// http.ServeContent properly handles Range requests for video scrubbing,
+	// conditional GETs, Content-Length, and immediate socket closure on navigation.
+	http.ServeContent(w, r, filepath.Base(filePath), stat.ModTime(), f)
 }
 
 // App Settings
